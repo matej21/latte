@@ -15,4 +15,13 @@ class RootNode implements Node
 {
 	/** @var Node[] */
 	public $children = [];
+
+
+	public function render(&$output): void
+	{
+		$output = '';
+		foreach ($this->children as $node) {
+			$node->render($output);
+		}
+	}
 }

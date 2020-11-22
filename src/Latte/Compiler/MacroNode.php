@@ -88,8 +88,11 @@ class MacroNode implements Node
 	/** @var int  position of end tag in source template */
 	public $endLine;
 
-	/** @var array{string, bool}|null */
-	public $saved;
+	/** @var bool */
+	public $isRightmostBegin;
+
+	/** @var bool */
+	public $isRightmostEnd;
 
 
 	public function __construct(
@@ -109,6 +112,65 @@ class MacroNode implements Node
 		$this->prefix = $prefix;
 		$this->data = new \stdClass;
 		$this->setArgs($args);
+	}
+
+
+	public function render(&$output): void
+	{
+		if ($this->empty) {
+			$this->writeCode($output, (string) $this->openingCode, $this->isRightmostBegin);
+			if ($this->prefix && $this->prefix !== self::PREFIX_TAG) {
+				$this->htmlNode->attrCode .= $this->attrCode;
+			}
+			return;
+		}
+
+
+		$this->content = '';
+		foreach ($this->children as $node) {
+			$node->render($this->content);
+		}
+
+		if ($this->prefix === self::PREFIX_NONE) {
+			$parts = explode($this->htmlNode->innerMarker, $this->content);
+			if (count($parts) === 3) { // markers may be destroyed by inner macro
+				$this->innerContent = $parts[1];
+			}
+		}
+
+		$this->closing = true;
+		$this->macro->nodeClosed($this);
+
+		if (isset($parts[1]) && $this->innerContent !== $parts[1]) {
+			$this->content = implode($this->htmlNode->innerMarker, [$parts[0], $this->innerContent, $parts[2]]);
+		}
+
+		if ($this->prefix && $this->prefix !== self::PREFIX_TAG) {
+			$this->htmlNode->attrCode .= $this->attrCode;
+		}
+
+		$this->writeCode($output, (string) $this->openingCode, $this->isRightmostBegin);
+		$output .= $this->content;
+		$this->writeCode($output, (string) $this->closingCode, $this->isRightmostEnd);
+	}
+
+
+	private function writeCode(string &$output, string $code, ?bool $isRightmost): void
+	{
+		if ($isRightmost) {
+			$leftOfs = ($tmp = strrpos($output, "\n")) === false ? 0 : $tmp + 1;
+			$isLeftmost = trim(substr($output, $leftOfs)) === '';
+			$replaced = $this->replaced ?? preg_match('#<\?php.*\secho\s#As', $code);
+			if ($isLeftmost && !$replaced) {
+				$output = substr($output, 0, $leftOfs); // alone macro without output -> remove indentation
+				if (substr($code, -2) !== '?>') {
+					$code .= '<?php ?>'; // consume new line
+				}
+			} elseif (substr($code, -2) === '?>') {
+				$code .= "\n"; // double newline to avoid newline eating by PHP
+			}
+		}
+		$output .= $code;
 	}
 
 

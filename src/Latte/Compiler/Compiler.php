@@ -60,9 +60,6 @@ class Compiler
 	/** @var Token[] */
 	private $tokens;
 
-	/** @var string pointer to current node content */
-	private $output;
-
 	/** @var int  position on source template */
 	private $position;
 
@@ -79,7 +76,7 @@ class Compiler
 	private $htmlNode;
 
 	/** @var Node|null */
-	private $macroNode;
+	private $node;
 
 	/** @var string */
 	private $contentType = self::CONTENT_HTML;
@@ -148,10 +145,8 @@ class Compiler
 	public function compile(array $tokens, string $className): string
 	{
 		$this->tokens = $tokens;
-		$output = '';
-		$this->output = &$output;
 		$this->inHead = true;
-		$this->macroNode = new RootNode;
+		$this->node = new RootNode;
 		$this->htmlNode = $this->context = null;
 		$this->placeholders = $this->properties = $this->constants = [];
 		$this->methods = ['main' => null, 'prepare' => null];
@@ -195,15 +190,18 @@ class Compiler
 			$this->htmlNode = $this->htmlNode->parentNode;
 		}
 
-		while (!$this->macroNode instanceof RootNode) {
-			if ($this->macroNode->parentNode instanceof MacroNode) {
-				trigger_error('Missing {/' . $this->macroNode->name . '}', E_USER_WARNING);
+		while (!$this->node instanceof RootNode) {
+			if ($this->node->parentNode instanceof MacroNode) {
+				trigger_error('Missing {/' . $this->node->name . '}', E_USER_WARNING);
 			}
-			if (~$this->flags[$this->macroNode->name] & Macro::AUTO_CLOSE) {
-				throw new CompileException('Missing ' . self::printEndTag($this->macroNode));
+			if (~$this->flags[$this->node->name] & Macro::AUTO_CLOSE) {
+				throw new CompileException('Missing ' . self::printEndTag($this->node));
 			}
-			$this->closeMacro($this->macroNode->name);
+			$this->closeMacro($this->node->name);
 		}
+
+		$output = '';
+		$this->node->render($output);
 
 		$prepare = $epilogs = '';
 		foreach ($macroHandlers as $handler) {
@@ -272,9 +270,9 @@ class Compiler
 	}
 
 
-	public function getMacroNode(): Node
+	public function getNode(): Node
 	{
-		return $this->macroNode;
+		return $this->node;
 	}
 
 
@@ -383,7 +381,7 @@ class Compiler
 		) {
 			$this->lastAttrValue = $token->text;
 		}
-		$this->output .= $this->escape($token->text);
+		$this->addTextNode($token->text);
 	}
 
 
@@ -455,15 +453,15 @@ class Compiler
 			$this->htmlNode->startLine = $this->getLine();
 			$this->context = self::CONTEXT_HTML_TAG;
 		}
-		$this->tagOffset = strlen($this->output);
-		$this->output .= $this->escape($token->text);
+		$this->addTextNode($token->text);
+		$this->tagOffset = count($this->node->children);
 	}
 
 
 	private function processHtmlTagEnd(Token $token): void
 	{
 		if (in_array($this->context, [self::CONTEXT_HTML_COMMENT, self::CONTEXT_HTML_BOGUS_COMMENT], true)) {
-			$this->output .= $token->text;
+			$this->addTextNode($token->text);
 			$this->context = self::CONTEXT_HTML_TEXT;
 			return;
 		}
@@ -489,17 +487,16 @@ class Compiler
 		}
 
 		if ($htmlNode->macroAttrs) {
-			$html = substr($this->output, $this->tagOffset) . $token->text;
-			$this->output = substr($this->output, 0, $this->tagOffset);
-			$this->writeAttrsMacro($html);
+			$slice = array_splice($this->node->children, $this->tagOffset - 1);
+			$this->writeAttrsMacro($slice, $token->text);
 		} else {
-			$this->output .= $token->text . $end;
+			$this->addTextNode($token->text . $end);
 		}
 
 		if ($htmlNode->empty) {
 			$htmlNode->closing = true;
 			if ($htmlNode->macroAttrs) {
-				$this->writeAttrsMacro($end);
+				$this->writeAttrsMacro([], $end);
 			}
 		}
 
@@ -526,15 +523,15 @@ class Compiler
 			if (isset($this->htmlNode->macroAttrs[$name])) {
 				throw new CompileException("Found multiple attributes {$token->name}.");
 
-			} elseif ($this->macroNode instanceof MacroNode && $this->macroNode->htmlNode === $this->htmlNode) {
-				throw new CompileException("n:attribute must not appear inside tags; found {$token->name} inside {{$this->macroNode->name}}.");
+			} elseif ($this->node instanceof MacroNode && $this->node->htmlNode === $this->htmlNode) {
+				throw new CompileException("n:attribute must not appear inside tags; found {$token->name} inside {{$this->node->name}}.");
 			}
 			$this->htmlNode->macroAttrs[$name] = $token->value;
 			return;
 		}
 
 		$this->lastAttrValue = &$this->htmlNode->attrs[$token->name];
-		$this->output .= $this->escape($token->text);
+		$this->addTextNode($token->text);
 
 		$lower = strtolower($token->name);
 		if (in_array($token->value, ['"', "'"], true)) {
@@ -567,26 +564,24 @@ class Compiler
 	private function processHtmlAttributeEnd(Token $token): void
 	{
 		$this->context = self::CONTEXT_HTML_TAG;
-		$this->output .= $token->text;
+		$this->addTextNode($token->text);
 	}
 
 
 	private function processComment(Token $token): void
 	{
-		$leftOfs = ($tmp = strrpos($this->output, "\n")) === false ? 0 : $tmp + 1;
-		$isLeftmost = trim(substr($this->output, $leftOfs)) === '';
+		$last = end($this->node->children);
+		if (!$last instanceof TextNode) {
+			return;
+		}
+		$leftOfs = ($tmp = strrpos($last->content, "\n")) === false ? 0 : $tmp + 1;
+		$isLeftmost = trim(substr($last->content, $leftOfs)) === '';
 		$isRightmost = substr($token->text, -1) === "\n";
 		if ($isLeftmost && $isRightmost) {
-			$this->output = substr($this->output, 0, $leftOfs);
+			$last->content = substr($last->content, 0, $leftOfs);
 		} else {
-			$this->output .= substr($token->text, strlen(rtrim($token->text, "\n")));
+			$last->content .= substr($token->text, strlen(rtrim($token->text, "\n")));
 		}
-	}
-
-
-	private function escape(string $s): string
-	{
-		return substr(str_replace('<?', '<<?php ?>?', $s . '?'), 0, -1);
 	}
 
 
@@ -594,7 +589,6 @@ class Compiler
 
 
 	/**
-	 * Generates code for {macro ...} to the output.
 	 * @internal
 	 */
 	public function openMacro(
@@ -605,23 +599,16 @@ class Compiler
 		string $nPrefix = null
 	): MacroNode {
 		$node = $this->expandMacro($name, $args, $modifiers, $nPrefix);
-		if ($node->empty) {
-			$this->writeCode((string) $node->openingCode, $node->replaced, $isRightmost);
-			if ($node->prefix && $node->prefix !== MacroNode::PREFIX_TAG) {
-				$this->htmlNode->attrCode .= $node->attrCode;
-			}
-		} else {
-			$this->macroNode = $node;
-			$node->saved = [&$this->output, $isRightmost];
-			$this->output = &$node->content;
-			$this->output = '';
+		$this->node->children[] = $node;
+		$node->isRightmostBegin = $isRightmost;
+		if (!$node->empty) {
+			$this->node = $node;
 		}
 		return $node;
 	}
 
 
 	/**
-	 * Generates code for {/macro ...} to the output.
 	 * @internal
 	 */
 	public function closeMacro(
@@ -631,7 +618,7 @@ class Compiler
 		bool $isRightmost = false,
 		string $nPrefix = null
 	): MacroNode {
-		$node = $this->macroNode;
+		$node = $this->node;
 
 		if (
 			!($node instanceof MacroNode)
@@ -650,63 +637,31 @@ class Compiler
 			trigger_error("Empty closing tag {/} is deprecated, use {/$node->name} on line " . $this->getLine(), E_USER_DEPRECATED);
 		}
 
-		$this->macroNode = $node->parentNode;
+		$this->node = $node->parentNode;
 		if ($node->args === '') {
 			$node->setArgs($args);
 		}
 
-		if ($node->prefix === MacroNode::PREFIX_NONE) {
-			$parts = explode($node->htmlNode->innerMarker, $node->content);
-			if (count($parts) === 3) { // markers may be destroyed by inner macro
-				$node->innerContent = $parts[1];
-			}
-		}
 
-		$node->closing = true;
 		$node->endLine = $node->prefix ? $node->htmlNode->endLine : $this->getLine();
-		$node->macro->nodeClosed($node);
-
-		if (isset($parts[1]) && $node->innerContent !== $parts[1]) {
-			$node->content = implode($node->htmlNode->innerMarker, [$parts[0], $node->innerContent, $parts[2]]);
-		}
-
-		if ($node->prefix && $node->prefix !== MacroNode::PREFIX_TAG) {
-			$this->htmlNode->attrCode .= $node->attrCode;
-		}
-		$this->output = &$node->saved[0];
-		$this->writeCode((string) $node->openingCode, $node->replaced, $node->saved[1]);
-		$this->output .= $node->content;
-		$this->writeCode((string) $node->closingCode, $node->replaced, $isRightmost, true);
+		$node->isRightmostEnd = $isRightmost;
 		return $node;
 	}
 
 
-	private function writeCode(string $code, ?bool $isReplaced, ?bool $isRightmost, bool $isClosing = false): void
+	public function addTextNode(string $s): void
 	{
-		if ($isRightmost) {
-			$leftOfs = ($tmp = strrpos($this->output, "\n")) === false ? 0 : $tmp + 1;
-			$isLeftmost = trim(substr($this->output, $leftOfs)) === '';
-			if ($isReplaced === null) {
-				$isReplaced = preg_match('#<\?php.*\secho\s#As', $code);
-			}
-			if ($isLeftmost && !$isReplaced) {
-				$this->output = substr($this->output, 0, $leftOfs); // alone macro without output -> remove indentation
-				if (!$isClosing && substr($code, -2) !== '?>') {
-					$code .= '<?php ?>'; // consume new line
-				}
-			} elseif (substr($code, -2) === '?>') {
-				$code .= "\n"; // double newline to avoid newline eating by PHP
-			}
+		if ($s !== '') {
+			$this->node->children[] = new TextNode($s, $this->getLine());
 		}
-		$this->output .= $code;
 	}
 
 
 	/**
-	 * Generates code for macro <tag n:attr> to the output.
+	 * Generates nodes for macro <tag n:attr>
 	 * @internal
 	 */
-	public function writeAttrsMacro(string $html): void
+	public function writeAttrsMacro(array $html, string $end): void
 	{
 		//     none-2 none-1 tag-1 tag-2       <el attr-1 attr-2>   /tag-2 /tag-1 [none-2] [none-1] inner-2 inner-1
 		// /inner-1 /inner-2 [none-1] [none-2] tag-1 tag-2  </el>   /tag-2 /tag-1 /none-1 /none-2
@@ -736,11 +691,11 @@ class Compiler
 		$innerMarker = '';
 		if ($this->htmlNode->closing) {
 			$left[] = function () {
-				$this->output .= $this->htmlNode->innerMarker;
+				$this->addTextNode((string) $this->htmlNode->innerMarker);
 			};
 		} else {
 			array_unshift($right, function () use (&$innerMarker) {
-				$this->output .= $innerMarker;
+				$this->addTextNode($innerMarker);
 			});
 		}
 
@@ -793,21 +748,22 @@ class Compiler
 
 		if (!$this->htmlNode->closing) {
 			$this->htmlNode->attrCode = &$this->placeholders[$uniq = ' n:q' . count($this->placeholders) . 'q'];
-			$html = substr_replace($html, $uniq, strrpos($html, '/>') ?: strrpos($html, '>'), 0);
+			$end = $uniq . $end;
 		}
 
 		foreach ($left as $func) {
 			$func();
 		}
 
-		$this->output .= $html;
+		$this->node->children = array_merge($this->node->children, $html);
+		$this->addTextNode($end);
 
 		foreach ($right as $func) {
 			$func();
 		}
 
-		if ($right && substr($this->output, -2) === '?>') {
-			$this->output .= "\n";
+		if ($right && ($last = end($this->node->children)) instanceof MacroNode && !$last->replaced) { // TODO
+			$this->addTextNode("\n");
 		}
 	}
 
@@ -865,7 +821,7 @@ class Compiler
 		}
 
 		foreach (array_reverse($this->macros[$name]) as $macro) {
-			$node = new MacroNode($macro, $name, $args, $modifiers, $this->macroNode, $this->htmlNode, $nPrefix);
+			$node = new MacroNode($macro, $name, $args, $modifiers, $this->node, $this->htmlNode, $nPrefix);
 			$node->context = $context;
 			$node->startLine = $nPrefix ? $this->htmlNode->startLine : $this->getLine();
 			if ($macro->nodeOpened($node) !== false) {

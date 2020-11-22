@@ -11,11 +11,11 @@ namespace Latte\Macros;
 
 use Latte;
 use Latte\CompileException;
+use Latte\Compiler\MacroNode;
+use Latte\Compiler\PhpHelpers;
+use Latte\Compiler\PhpWriter;
 use Latte\Engine;
 use Latte\Helpers;
-use Latte\MacroNode;
-use Latte\PhpHelpers;
-use Latte\PhpWriter;
 
 
 /**
@@ -33,7 +33,7 @@ class CoreMacros extends MacroSet
 	private $idCounter = 0;
 
 
-	public static function install(Latte\Compiler $compiler): void
+	public static function install(Latte\Compiler\Compiler $compiler): void
 	{
 		$me = new static($compiler);
 
@@ -114,7 +114,7 @@ class CoreMacros extends MacroSet
 		$code = '';
 		if ($this->overwrittenVars) {
 			$vars = array_map(function ($l) { return implode(', ', $l); }, $this->overwrittenVars);
-			$code .= 'foreach (array_intersect_key(' . Latte\PhpHelpers::dump($vars) . ', $this->params) as $__v => $__l) { '
+			$code .= 'foreach (array_intersect_key(' . Latte\Compiler\PhpHelpers::dump($vars) . ', $this->params) as $__v => $__l) { '
 				. 'trigger_error("Variable \$$__v overwritten in foreach on line $__l"); } ';
 		}
 		$code = $code
@@ -605,7 +605,7 @@ class CoreMacros extends MacroSet
 		$var = true;
 		$hasType = false;
 		$tokens = $node->tokenizer;
-		$res = new Latte\MacroTokens;
+		$res = new Latte\Compiler\MacroTokens;
 		while ($tokens->nextToken()) {
 			if (
 				$var

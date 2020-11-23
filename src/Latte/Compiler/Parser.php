@@ -435,7 +435,7 @@ class Parser
 	}
 
 
-	private function addToken(string $type, string $text): Token
+	private function addToken(int $type, string $text): Token
 	{
 		$this->output[] = $token = new Token;
 		$token->type = $type;

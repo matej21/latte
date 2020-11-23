@@ -165,6 +165,16 @@ class Compiler
 			$handler->initialize($this);
 		}
 
+		$methods = [
+			Token::TEXT => 'processText',
+			Token::MACRO_TAG => 'processMacroTag',
+			Token::HTML_TAG_BEGIN => 'processHtmlTagBegin',
+			Token::HTML_TAG_END => 'processHtmlTagEnd',
+			Token::HTML_ATTRIBUTE_BEGIN => 'processHtmlAttributeBegin',
+			Token::HTML_ATTRIBUTE_END => 'processHtmlAttributeEnd',
+			Token::COMMENT => 'processComment',
+		];
+
 		foreach ($tokens as $this->position => $token) {
 			if ($this->inHead && !(
 				$token->type === $token::COMMENT
@@ -173,7 +183,8 @@ class Compiler
 			)) {
 				$this->inHead = false;
 			}
-			$this->{"process$token->type"}($token);
+			$method = $methods[$token->type];
+			$this->$method($token);
 		}
 
 		while ($this->htmlNode) {
